@@ -8,3 +8,7 @@ add_executable(hrdups hrdups.cpp)
 target_link_libraries(hrdups PRIVATE
         crypto
         )
+
+install(TARGETS hrdups
+		RUNTIME DESTINATION bin
+)
