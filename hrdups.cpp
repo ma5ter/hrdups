@@ -3,14 +3,16 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <unistd.h>
 #include <vector>
 #include <openssl/sha.h>
+#include <sys/stat.h>
 
 int verbose = 0;
 
 // data structure is:
 // hash-map of size->hash-map of hash->filename
-typedef std::map<size_t, std::map<std::string, std::vector<std::string>>> traverse_map_t;
+typedef std::map<size_t, std::map<std::string, std::vector<std::string> > > traverse_map_t;
 
 /// \brief Returns the size of a given file in bytes.
 /// \param[in] file_path The path to the file.
@@ -38,7 +40,7 @@ std::string fhash(const std::filesystem::path &file_path) {
 
 	if (verbose) std::cout << "\t" << file_path.string();
 
-	constexpr const std::size_t buffer_size { 1 << 12 };
+	constexpr const std::size_t buffer_size{ 1 << 12 };
 	char buffer[buffer_size];
 
 	unsigned char hash[SHA256_DIGEST_LENGTH] = { 0 };
@@ -70,6 +72,20 @@ std::string fhash(const std::filesystem::path &file_path) {
 		}
 	}
 	return hash_str;
+}
+
+/// \brief Compares the owner, mode, and other attributes of two files.
+/// \param[in] a The path to the first file.
+/// \param[in] b The path to the second file.
+/// \return True if the owner, mode, and other attributes of the two files are equal, false otherwise.
+/// \details This function uses the stat() system call to retrieve the file status information for both files and compares the owner (st_uid), mode (st_mode), and other attributes (st_dev, st_ino, st_nlink, st_rdev, st_size, st_atime, st_mtime, st_ctime).
+/// \note The function returns false if any of the attributes do not match.
+bool compare_file_attributes(const char *a, const char *b) {
+	struct stat stat1, stat2;
+	if (stat(a, &stat1) != 0 || stat(b, &stat2) != 0) {
+		return false;
+	}
+	return (stat1.st_uid == stat2.st_uid && stat1.st_gid == stat2.st_gid && stat1.st_mode == stat2.st_mode && stat1.st_dev == stat2.st_dev);
 }
 
 /// \brief Recursively traverses the given directory and its subdirectories, collecting files of the same size and calculating their hashes.
@@ -114,29 +130,26 @@ int main(int argc, char **argv) {
 
 	for (argv++, argc--; argc; argc--) {
 		auto option = *argv++;
-		if (0 == strcmp(option,"-h") || 0 == strcmp(option,"--help")) {
-			std::cout << "Hardlink (remove) duplicates, options:" << std::endl
-				<< "\t-h (--help)\tshow this help" << std::endl
-				<< "\t-k (--keep)\tkeep empty folders on remove" << std::endl
-				<< "\t-p (--pretend)\tdry-run" << std::endl
-				<< "\t-r (--remove)\tdon't hardlink duplicates, just remove" << std::endl
-				<< "\t-v (--verbose)\texplain hashing process (repeat the option for more verbose output)" << std::endl
-				;
+		if (0 == strcmp(option, "-h") || 0 == strcmp(option, "--help")) {
+			std::cout << "Hardlink (remove) duplicates, options:" << std::endl << "\t-h (--help)\tshow this help" << std::endl <<
+			"\t-k (--keep)\tkeep empty folders on remove" << std::endl << "\t-p (--pretend)\tdry-run" << std::endl <<
+			"\t-r (--remove)\tdon't hardlink duplicates, just remove" << std::endl <<
+			"\t-v (--verbose)\texplain hashing process (repeat the option for more verbose output)" << std::endl;
 			return 0;
 		}
-		if (0 == strcmp(option,"-k") || 0 == strcmp(option,"--keep")) {
+		if (0 == strcmp(option, "-k") || 0 == strcmp(option, "--keep")) {
 			keep = true;
 			continue;
 		}
-		if (0 == strcmp(option,"-p") || 0 == strcmp(option,"--pretend")) {
+		if (0 == strcmp(option, "-p") || 0 == strcmp(option, "--pretend")) {
 			pretend = true;
 			continue;
 		}
-		if (0 == strcmp(option,"-r") || 0 == strcmp(option,"--remove")) {
+		if (0 == strcmp(option, "-r") || 0 == strcmp(option, "--remove")) {
 			remove = true;
 			continue;
 		}
-		if (0 == strcmp(option,"-v") || 0 == strcmp(option,"--verbose")) {
+		if (0 == strcmp(option, "-v") || 0 == strcmp(option, "--verbose")) {
 			verbose++;
 			continue;
 		}
@@ -151,7 +164,7 @@ int main(int argc, char **argv) {
 
 	try {
 		std::cout << "Building hash map..." << std::endl;
-		for (const auto &path : paths) {
+		for (const auto &path: paths) {
 			traverse(path, map);
 		}
 	}
@@ -181,48 +194,61 @@ int main(int argc, char **argv) {
 				const auto &file = file_names[i];
 				std::cout << "\t" << file << std::endl;
 
-				if (!pretend) {
-					if (0 != std::remove(file.c_str())) {
-						std::ostringstream os;
-						os << "Cannot delete file \"" << file << "\": " << std::strerror(errno) << ".";
-						throw std::runtime_error(os.str());
-					}
+				const char *base_str = base.c_str();
+				const char * file_str = file.c_str();
 
-					if (remove) {
-						if (!keep) {
-							// check for empty folder
-							const auto dir = std::filesystem::path(file).parent_path();
-							if (std::filesystem::is_directory(dir)) {
-								bool empty = true;
-								for (const auto &entry: std::filesystem::directory_iterator(dir)) {
-									empty = false;
-									break;
-								}
-								if (empty) {
-									if (0 != std::remove(dir.c_str())) {
-										std::ostringstream os;
-										os << "Cannot delete empty directory \"" << dir << "\": " << std::strerror(errno) << ".";
-										throw std::runtime_error(os.str());
+				if (compare_file_attributes(base_str, file_str)) {
+					if (!pretend) {
+						if (0 != std::remove(file_str)) {
+							std::ostringstream os;
+							os << "Cannot delete file \"" << file << "\": " << std::strerror(errno) << ".";
+							throw std::runtime_error(os.str());
+						}
+
+						if (remove) {
+							if (!keep) {
+								// check for empty folder
+								const auto dir = std::filesystem::path(file).parent_path();
+								if (std::filesystem::is_directory(dir)) {
+									bool empty = true;
+									for (const auto &entry: std::filesystem::directory_iterator(dir)) {
+										empty = false;
+										break;
 									}
-									else {
-										std::cout << "Empty directory removed " << dir << std::endl;
+									if (empty) {
+										if (0 != std::remove(dir.c_str())) {
+											std::ostringstream os;
+											os << "Cannot delete empty directory \"" << dir << "\": " << std::strerror(errno) << ".";
+											throw std::runtime_error(os.str());
+										}
+										else {
+											std::cout << "Empty directory removed " << dir << std::endl;
+										}
 									}
 								}
 							}
 						}
-					}
-					else {
-						std::error_code ec;
-						std::filesystem::create_hard_link(std::filesystem::path(base.c_str()), std::filesystem::path(file.c_str()), ec);
-						if (ec.value() != 0) {
-							std::ostringstream os;
-							os << "Cannot create hardlink for \"" << base << " as " << file << "\": " << ec.message() << ".";
-							throw std::runtime_error(os.str());
+						else {
+							std::error_code ec;
+							std::filesystem::create_hard_link(std::filesystem::path(base_str), std::filesystem::path(file_str), ec);
+							if (ec.value() != 0) {
+								std::ostringstream os;
+								os << "Cannot create hardlink for \"" << base << " as " << file << "\": " << ec.message() << ".";
+								throw std::runtime_error(os.str());
+							}
+							struct stat base_stat;
+							if (stat(base_str, &base_stat) == 0) {
+								chown(file_str, base_stat.st_uid, base_stat.st_gid);
+								chmod(file_str, base_stat.st_mode);
+							}
 						}
 					}
-				}
 
-				saved += size;
+					saved += size;
+				}
+				else {
+					std::cout << "Owner/mode mismatch " << base << "and" << file << std::endl;
+				}
 			}
 		}
 	}
